@@ -1,0 +1,83 @@
+name: Automation Network
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 * * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  network-health:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify GitHub repositories
+        env:
+          GH_TOKEN: ${{ secrets.NETWORK_GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${GH_TOKEN:-}" || { echo 'NETWORK_GITHUB_TOKEN=NOT_CONFIGURED'; exit 1; }
+          for repo in \
+            saediniaali280-debug/workflows-starter-template \
+            saediniaali280-debug/zehnsarmaye \
+            saediniaali280-debug/MindCapital-Ali100 \
+            saediniaali280-debug/ALI100-Broker \
+            saediniaali280-debug/cmd; do
+            status="$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$repo")"
+            test "$status" = "200" || { echo "GitHub=$repo HTTP=$status"; exit 1; }
+            echo "GitHub=$repo PASS"
+          done
+
+      - name: Verify Cloudflare account access
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CF_TOKEN:-}" || { echo 'CLOUDFLARE_API_TOKEN=NOT_CONFIGURED'; exit 1; }
+          test -n "${CF_ACCOUNT_ID:-}" || { echo 'CLOUDFLARE_ACCOUNT_ID=NOT_CONFIGURED'; exit 1; }
+          status="$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $CF_TOKEN" -H 'Content-Type: application/json' "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID")"
+          test "$status" = "200" || { echo "Cloudflare HTTP=$status"; exit 1; }
+          echo 'Cloudflare=PASS'
+
+      - name: Verify ZehnSarmaye public endpoints
+        shell: bash
+        run: |
+          set -euo pipefail
+          for url in \
+            https://zehnsarmaye.saediniaali.workers.dev/api/version \
+            https://zehnsarmaye.ir/api/version; do
+            status="$(curl -k -sS -o /dev/null -w '%{http_code}' "$url" || true)"
+            echo "Endpoint=$url HTTP=$status"
+          done
+
+      - name: Verify 1xAI API access
+        env:
+          ONE_XAI_API_KEY: ${{ secrets.ONE_XAI_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${ONE_XAI_API_KEY:-}" ]; then
+            echo '1xAI=NOT_CONFIGURED'
+            exit 0
+          fi
+          status="$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $ONE_XAI_API_KEY" 'https://1xai.ir/v1/models' || true)"
+          echo "1xAI HTTP=$status"
+          case "$status" in
+            200) echo '1xAI=PASS' ;;
+            *) echo '1xAI=CHECK_KEY_OR_PROVIDER' ;;
+          esac
+
+      - name: Write network summary
+        run: |
+          {
+            echo '# Automation Network Heartbeat'
+            echo
+            echo "UTC: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo
+            echo 'Qwen Coder: external client; not verified by this workflow.'
+            echo 'Email accounts: identities only; no mailbox access is performed.'
+          } >> "$GITHUB_STEP_SUMMARY"
