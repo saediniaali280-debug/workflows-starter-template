@@ -4,6 +4,8 @@ on:
   workflow_dispatch:
   schedule:
     - cron: '17 * * * *'
+  repository_dispatch:
+    types: [mesh_heartbeat]
 
 permissions:
   contents: read
@@ -12,72 +14,139 @@ jobs:
   network-health:
     runs-on: ubuntu-latest
     steps:
-      - name: Verify GitHub repositories
+      - name: Require network credentials
         env:
           GH_TOKEN: ${{ secrets.NETWORK_GITHUB_TOKEN }}
-        shell: bash
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          D1_ID: ${{ secrets.NETWORK_D1_DATABASE_ID }}
         run: |
           set -euo pipefail
           test -n "${GH_TOKEN:-}" || { echo 'NETWORK_GITHUB_TOKEN=NOT_CONFIGURED'; exit 1; }
-          for repo in \
-            saediniaali280-debug/workflows-starter-template \
-            saediniaali280-debug/zehnsarmaye \
-            saediniaali280-debug/MindCapital-Ali100 \
-            saediniaali280-debug/ALI100-Broker \
-            saediniaali280-debug/cmd; do
-            status="$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$repo")"
-            test "$status" = "200" || { echo "GitHub=$repo HTTP=$status"; exit 1; }
-            echo "GitHub=$repo PASS"
-          done
+          test -n "${CF_TOKEN:-}" || { echo 'CLOUDFLARE_API_TOKEN=NOT_CONFIGURED'; exit 1; }
+          test -n "${CF_ACCOUNT_ID:-}" || { echo 'CLOUDFLARE_ACCOUNT_ID=NOT_CONFIGURED'; exit 1; }
+          test -n "${D1_ID:-}" || { echo 'NETWORK_D1_DATABASE_ID=NOT_CONFIGURED'; exit 1; }
 
-      - name: Verify Cloudflare account access
+      - name: Initialize D1 network tables
         env:
           CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          D1_ID: ${{ secrets.NETWORK_D1_DATABASE_ID }}
         shell: bash
         run: |
           set -euo pipefail
-          test -n "${CF_TOKEN:-}" || { echo 'CLOUDFLARE_API_TOKEN=NOT_CONFIGURED'; exit 1; }
-          test -n "${CF_ACCOUNT_ID:-}" || { echo 'CLOUDFLARE_ACCOUNT_ID=NOT_CONFIGURED'; exit 1; }
-          status="$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $CF_TOKEN" -H 'Content-Type: application/json' "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID")"
-          test "$status" = "200" || { echo "Cloudflare HTTP=$status"; exit 1; }
-          echo 'Cloudflare=PASS'
+          SQL="CREATE TABLE IF NOT EXISTS automation_network_heartbeats (id TEXT PRIMARY KEY, repo TEXT NOT NULL, sha TEXT NOT NULL, event TEXT NOT NULL, status TEXT NOT NULL, workflow TEXT, run_id TEXT, details_json TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP); CREATE INDEX IF NOT EXISTS idx_automation_heartbeats_repo_time ON automation_network_heartbeats(repo, created_at DESC); CREATE TABLE IF NOT EXISTS automation_recovery (run_id TEXT PRIMARY KEY, repo TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, last_attempt_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP); CREATE TABLE IF NOT EXISTS automation_ai_cache (cache_key TEXT PRIMARY KEY, repo TEXT NOT NULL, run_id TEXT, job_id TEXT, model TEXT NOT NULL, analysis TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);"
+          curl -fsS -X POST "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/d1/database/$D1_ID/query" -H "Authorization: Bearer $CF_TOKEN" -H 'Content-Type: application/json' --data "$(jq -n --arg sql "$SQL" '{sql:$sql}')" >/tmp/d1-init.json
+          jq -e '.success == true or (.result | length > 0)' /tmp/d1-init.json >/dev/null
+          echo 'D1_SCHEMA=READY'
 
-      - name: Verify ZehnSarmaye public endpoints
-        shell: bash
-        run: |
-          set -euo pipefail
-          for url in \
-            https://zehnsarmaye.saediniaali.workers.dev/api/version \
-            https://zehnsarmaye.ir/api/version; do
-            status="$(curl -k -sS -o /dev/null -w '%{http_code}' "$url" || true)"
-            echo "Endpoint=$url HTTP=$status"
-          done
-
-      - name: Verify 1xAI API access
+      - name: Process incoming heartbeat
+        if: ${{ github.event_name == 'repository_dispatch' }}
         env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          D1_ID: ${{ secrets.NETWORK_D1_DATABASE_ID }}
+          HEARTBEAT_REPO: ${{ github.event.client_payload.repo }}
+          HEARTBEAT_SHA: ${{ github.event.client_payload.sha }}
+          HEARTBEAT_STATUS: ${{ github.event.client_payload.status }}
+          HEARTBEAT_WORKFLOW: ${{ github.event.client_payload.workflow }}
+          HEARTBEAT_RUN_ID: ${{ github.event.client_payload.run_id }}
+          HEARTBEAT_DETAILS: ${{ toJSON(github.event.client_payload) }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ID="hb-$(date +%s%N)-${RANDOM}"
+          SQL="INSERT INTO automation_network_heartbeats(id,repo,sha,event,status,workflow,run_id,details_json) VALUES(?,?,?,?,?,?,?,?);"
+          curl -fsS -X POST "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/d1/database/$D1_ID/query" -H "Authorization: Bearer $CF_TOKEN" -H 'Content-Type: application/json' --data "$(jq -n --arg sql "$SQL" --arg id "$ID" --arg repo "$HEARTBEAT_REPO" --arg sha "$HEARTBEAT_SHA" --arg event 'repository_dispatch' --arg status "$HEARTBEAT_STATUS" --arg workflow "$HEARTBEAT_WORKFLOW" --arg run "$HEARTBEAT_RUN_ID" --arg details "$HEARTBEAT_DETAILS" '{sql:$sql,params:[$id,$repo,$sha,$event,$status,$workflow,$run,$details]}')" >/tmp/hb.json
+          jq -e '.success == true or (.result | length > 0)' /tmp/hb.json >/dev/null
+          echo "HEARTBEAT_STORED=$HEARTBEAT_REPO"
+
+      - name: Poll repository workflows and self-heal once
+        env:
+          GH_TOKEN: ${{ secrets.NETWORK_GITHUB_TOKEN }}
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          D1_ID: ${{ secrets.NETWORK_D1_DATABASE_ID }}
           ONE_XAI_API_KEY: ${{ secrets.ONE_XAI_API_KEY }}
         shell: bash
         run: |
           set -euo pipefail
-          if [ -z "${ONE_XAI_API_KEY:-}" ]; then
-            echo '1xAI=NOT_CONFIGURED'
-            exit 0
-          fi
-          status="$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $ONE_XAI_API_KEY" 'https://1xai.ir/v1/models' || true)"
-          echo "1xAI HTTP=$status"
-          case "$status" in
-            200) echo '1xAI=PASS' ;;
-            *) echo '1xAI=CHECK_KEY_OR_PROVIDER' ;;
-          esac
+          repos=(
+            saediniaali280-debug/workflows-starter-template
+            saediniaali280-debug/zehnsarmaye
+            saediniaali280-debug/MindCapital-Ali100
+            saediniaali280-debug/ALI100-Broker
+            saediniaali280-debug/cmd
+          )
+          d1() {
+            local sql="$1"; shift
+            jq -n --arg sql "$sql" --args '$ARGS.positional as $p | {sql:$sql,params:$p}' "$@" |
+              curl -fsS -X POST "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/d1/database/$D1_ID/query" -H "Authorization: Bearer $CF_TOKEN" -H 'Content-Type: application/json' --data @-
+          }
+          failures=0
+          for repo in "${repos[@]}"; do
+            meta="$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$repo")"
+            default_branch="$(jq -r '.default_branch' <<<"$meta")"
+            runs="$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$repo/actions/runs?per_page=20&branch=$default_branch")"
+            run_id="$(jq -r '.workflow_runs | map(select(.status=="completed")) | .[0].id // empty' <<<"$runs")"
+            conclusion="$(jq -r '.workflow_runs | map(select(.status=="completed")) | .[0].conclusion // "none"' <<<"$runs")"
+            workflow="$(jq -r '.workflow_runs | map(select(.status=="completed")) | .[0].name // "none"' <<<"$runs")"
+            sha="$(jq -r '.workflow_runs | map(select(.status=="completed")) | .[0].head_sha // "unknown"' <<<"$runs")"
+            if [ -z "$run_id" ]; then echo "GitHub=$repo NO_COMPLETED_RUN"; continue; fi
+            echo "GitHub=$repo workflow=$workflow conclusion=$conclusion run=$run_id"
+            d1 "INSERT INTO automation_network_heartbeats(id,repo,sha,event,status,workflow,run_id,details_json) VALUES(?,?,?,?,?,?,?,?);" "poll-$run_id" "$repo" "$sha" "poll" "$conclusion" "$workflow" "$run_id" "{\"default_branch\":\"$default_branch\"}" >/tmp/poll.json
+            if [[ "$conclusion" == "failure" || "$conclusion" == "timed_out" ]]; then
+              attempts="$(d1 "SELECT attempts FROM automation_recovery WHERE run_id = ? LIMIT 1;" "$run_id" | jq -r '.result[0].results[0].attempts // 0')"
+              if [ "$attempts" -lt 1 ]; then
+                code="$(curl -sS -o /tmp/retry.json -w '%{http_code}' -X POST -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$repo/actions/runs/$run_id/rerun-failed-jobs")"
+                if [ "$code" = "201" ]; then
+                  d1 "INSERT INTO automation_recovery(run_id,repo,attempts) VALUES(?,?,1) ON CONFLICT(run_id) DO UPDATE SET attempts=attempts+1,last_attempt_at=CURRENT_TIMESTAMP;" "$run_id" "$repo" >/tmp/recovery.json
+                  echo "SELF_HEAL=$repo RETRY=STARTED run=$run_id"
+                else
+                  echo "SELF_HEAL=$repo RETRY=FAILED HTTP=$code"
+                fi
+              else
+                echo "SELF_HEAL=$repo RETRY=SKIPPED attempts=$attempts"
+              fi
+              failures=$((failures+1))
+              job_id="$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$repo/actions/runs/$run_id/jobs?per_page=100" | jq -r '.jobs[] | select(.conclusion=="failure" or .conclusion=="timed_out") | .id' | head -n 1)"
+              if [ -n "$job_id" ] && [ -n "${ONE_XAI_API_KEY:-}" ]; then
+                log="$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$repo/actions/jobs/$job_id/logs" 2>/dev/null | tail -c 12000 || true)"
+                fingerprint="$(printf '%s' "$log" | sha256sum | cut -d' ' -f1)"
+                cached="$(d1 "SELECT analysis FROM automation_ai_cache WHERE cache_key = ? LIMIT 1;" "${repo}:${fingerprint}" | jq -r '.result[0].results[0].analysis // empty')"
+                if [ -n "$cached" ]; then
+                  echo "1xAI=CACHE_HIT repo=$repo"
+                else
+                  body="$(jq -n --arg log "$log" --arg repo "$repo" --arg run "$run_id" '{model:"gpt-4o-mini",messages:[{role:"system",content:"Analyze CI failure logs only. Return concise diagnosis, confidence, likely root cause, and safe next action. Do not claim to have changed code."},{role:"user",content:("repo="+$repo+" run="+$run+"\n"+$log)}],temperature:0.1,max_tokens:600}')"
+                  ai="$(curl -sS -w '\n%{http_code}' -H "Authorization: Bearer $ONE_XAI_API_KEY" -H 'Content-Type: application/json' -X POST 'https://1xai.ir/v1/chat/completions' --data "$body" || true)"
+                  ai_code="$(tail -n 1 <<<"$ai")"
+                  ai_json="$(sed '$d' <<<"$ai")"
+                  analysis="$(jq -r '.choices[0].message.content // empty' <<<"$ai_json" 2>/dev/null || true)"
+                  if [ "$ai_code" = "200" ] && [ -n "$analysis" ]; then
+                    d1 "INSERT OR REPLACE INTO automation_ai_cache(cache_key,repo,run_id,job_id,model,analysis) VALUES(?,?,?,?,?,?);" "${repo}:${fingerprint}" "$repo" "$run_id" "$job_id" "gpt-4o-mini" "$analysis" >/tmp/ai-cache.json
+                    echo "1xAI=CACHE_WRITE repo=$repo"
+                  else
+                    echo "1xAI=UNAVAILABLE HTTP=$ai_code repo=$repo"
+                  fi
+                fi
+              fi
+            fi
+          done
+          echo "NETWORK_FAILURES=$failures" >> "$GITHUB_ENV"
+          test "$failures" -eq 0
 
       - name: Write network summary
+        if: always()
+        env:
+          ONE_XAI_API_KEY: ${{ secrets.ONE_XAI_API_KEY }}
         run: |
           {
-            echo '# Automation Network Heartbeat'
+            echo '# Automation Network'
             echo
             echo "UTC: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-            echo
-            echo 'Qwen Coder: external client; not verified by this workflow.'
-            echo 'Email accounts: identities only; no mailbox access is performed.'
+            echo 'Topology: mesh nodes -> GitHub Hub -> Cloudflare D1'
+            echo 'Self-heal policy: max 1 automatic failed-job retry per run.'
+            if [ -n "${ONE_XAI_API_KEY:-}" ]; then echo '1xAI mode: failure-analysis only + D1 cache.'; else echo '1xAI mode: NOT_CONFIGURED'; fi
+            echo 'Qwen Coder: external client; not a runtime dependency.'
+            echo 'Email accounts: no mailbox access.'
           } >> "$GITHUB_STEP_SUMMARY"
