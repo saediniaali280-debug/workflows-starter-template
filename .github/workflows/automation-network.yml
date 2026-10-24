@@ -7,9 +7,12 @@ on:
   repository_dispatch:
     types: [mesh_heartbeat]
 
+concurrency:
+  group: automation-network-recovery
+  cancel-in-progress: false
+
 permissions:
   contents: read
-  issues: write
 
 jobs:
   network-health:
@@ -97,20 +100,34 @@ jobs:
             echo "GitHub=$repo workflow=$workflow conclusion=$conclusion run=$run_id"
             d1 "INSERT INTO automation_network_heartbeats(id,repo,sha,event,status,workflow,run_id,details_json) VALUES(?,?,?,?,?,?,?,?);" "poll-$run_id" "$repo" "$sha" "poll" "$conclusion" "$workflow" "$run_id" "{\"default_branch\":\"$default_branch\"}" >/tmp/poll.json
             if [[ "$conclusion" == "failure" || "$conclusion" == "timed_out" ]]; then
+              jobs_json="$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$repo/actions/runs/$run_id/jobs?per_page=100")"
+              job_id="$(jq -r '.jobs[] | select(.conclusion=="failure" or .conclusion=="timed_out") | .id' <<<"$jobs_json" | head -n 1)"
+              runner_id="0"
+              step_count="0"
+              if [ -n "$job_id" ]; then
+                runner_id="$(jq -r --argjson id "$job_id" '.jobs[] | select(.id == $id) | .runner_id // 0' <<<"$jobs_json")"
+                step_count="$(jq -r --argjson id "$job_id" '.jobs[] | select(.id == $id) | (.steps // [] | length)' <<<"$jobs_json")"
+              fi
+              retry_allowed=0
+              case "$repo|$workflow" in
+                "saediniaali280-debug/zehnsarmaye|Build"|"saediniaali280-debug/zehnsarmaye|ALI100 CI"|"saediniaali280-debug/MindCapital-Ali100|Revenue Core"|"saediniaali280-debug/MindCapital-Ali100|ALI100 Tests"|"saediniaali280-debug/ALI100-Broker|ALI100 Broker CI")
+                  retry_allowed=1
+                  ;;
+              esac
               attempts="$(d1 "SELECT attempts FROM automation_recovery WHERE run_id = ? LIMIT 1;" "$run_id" | jq -r '.result[0].results[0].attempts // 0')"
-              if [ "$attempts" -lt 1 ]; then
+              if [ "$retry_allowed" -eq 1 ] && [ -n "$job_id" ] && [ "$runner_id" -gt 0 ] && [ "$step_count" -gt 0 ] && [ "$attempts" -lt 1 ]; then
+                # Reserve the sole retry before the API call so an API failure cannot cause hourly retry loops.
+                d1 "INSERT INTO automation_recovery(run_id,repo,attempts) VALUES(?,?,1) ON CONFLICT(run_id) DO UPDATE SET attempts=MAX(attempts,1),last_attempt_at=CURRENT_TIMESTAMP;" "$run_id" "$repo" >/tmp/recovery.json
                 code="$(curl -sS -o /tmp/retry.json -w '%{http_code}' -X POST -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$repo/actions/runs/$run_id/rerun-failed-jobs")"
                 if [ "$code" = "201" ]; then
-                  d1 "INSERT INTO automation_recovery(run_id,repo,attempts) VALUES(?,?,1) ON CONFLICT(run_id) DO UPDATE SET attempts=attempts+1,last_attempt_at=CURRENT_TIMESTAMP;" "$run_id" "$repo" >/tmp/recovery.json
                   echo "SELF_HEAL=$repo RETRY=STARTED run=$run_id"
                 else
-                  echo "SELF_HEAL=$repo RETRY=FAILED HTTP=$code"
+                  echo "SELF_HEAL=$repo RETRY=FAILED HTTP=$code retry_budget_consumed=1"
                 fi
               else
-                echo "SELF_HEAL=$repo RETRY=SKIPPED attempts=$attempts"
+                echo "SELF_HEAL=$repo RETRY=SKIPPED allowlisted=$retry_allowed runner_id=$runner_id steps=$step_count attempts=$attempts"
               fi
               failures=$((failures+1))
-              job_id="$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$repo/actions/runs/$run_id/jobs?per_page=100" | jq -r '.jobs[] | select(.conclusion=="failure" or .conclusion=="timed_out") | .id' | head -n 1)"
               analysis=''
               if [ -n "$job_id" ] && [ -n "${ONE_XAI_API_KEY:-}" ]; then
                 log="$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$repo/actions/jobs/$job_id/logs" 2>/dev/null | tail -c 12000 || true)"
