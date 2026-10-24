@@ -31,7 +31,7 @@ class AutomationRetryPolicyTests(unittest.TestCase):
         self.assertIn('retry_allowed=0', WORKFLOW)
 
     def test_github_token_permissions_remain_read_only(self):
-        self.assertIn("permissions:\\n  contents: read\\n", WORKFLOW)
+        self.assertIn("permissions:\n  contents: read\n", WORKFLOW)
         self.assertNotIn("issues: write", WORKFLOW)
 
 
