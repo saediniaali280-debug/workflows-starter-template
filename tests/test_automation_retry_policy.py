@@ -27,7 +27,7 @@ class AutomationRetryPolicyTests(unittest.TestCase):
         self.assertIn('cancel-in-progress: false', WORKFLOW)
 
     def test_automation_network_does_not_retry_itself_or_unknown_workflows(self):
-        self.assertNotIn('"saedinia280-debug/workflows-starter-template|Automation Network"', WORKFLOW)
+        self.assertNotIn('"saediniaali280-debug/workflows-starter-template|Automation Network"', WORKFLOW)
         self.assertIn('retry_allowed=0', WORKFLOW)
 
     def test_github_token_permissions_remain_read_only(self):
