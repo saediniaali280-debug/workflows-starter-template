@@ -11,7 +11,7 @@ export function redactCiLog(input) {
     [/\bAuthorization\s*:\s*(?:Bearer|Basic)\s+[^\s,;]+/gi, "Authorization: [REDACTED_AUTH]"],
     [/\b(?:Cookie|Set-Cookie)\s*:\s*[^\r\n]*/gi, "Cookie: [REDACTED_COOKIE]"],
     [/([?&](?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|signature|client_secret|code)=)[^&\s#]*/gi, "$1[REDACTED]"],
-    [/((?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|private[_-]?key|password|passwd|secret|authorization|cookie)\s*["']?\s*[:=]\s*["']?)[^"'\s,;}&]+/gi, "$1[REDACTED]"],
+    [/((?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|private[_-]?key|password|passwd|secret|authorization|cookie)\s*["']?\s*[:=]\s*["']?)(?!\[REDACTED(?:_[A-Z]+)?\])[^"'\s,;}&]+/gi, "$1[REDACTED]"],
     [/\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g, "[REDACTED_GITHUB_TOKEN]"],
     [/\bgithub_pat_[A-Za-z0-9_]{20,}\b/g, "[REDACTED_GITHUB_PAT]"],
     [/\bsk-[A-Za-z0-9_-]{20,}\b/g, "[REDACTED_API_KEY]"],
