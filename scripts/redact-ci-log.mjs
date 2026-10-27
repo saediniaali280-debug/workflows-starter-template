@@ -20,7 +20,7 @@ export function redactCiLog(input) {
     [/([?&](?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|signature|client_secret|code)=)[^&\s#]*/gi, "$1[REDACTED]"],
 
     // Named secret fields in common log / JSON / YAML forms. Preserve already-redacted markers.
-    [/((?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|private[_-]?key|password|passwd|secret|authorization|cookie)\s*["']?\s*[:=]\s*["']?)(?!\[REDACTED(?:_[A-Z]+)?\])[^"'\s,;}&]+/gi, "$1[REDACTED]"],
+    [/((?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|private[_-]?key|password|passwd|secret|authorization|cookie)\s*["']?\s*[:=]\s*["']?)(?!\[REDACTED(?:_[A-Z]+)*\])[^"'\s,;}&]+/gi, "$1[REDACTED]"],
 
     // Common provider token shapes.
     [/\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g, "[REDACTED_GITHUB_TOKEN]"],

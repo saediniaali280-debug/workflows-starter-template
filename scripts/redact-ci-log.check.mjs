@@ -79,6 +79,8 @@ check("automation workflow requires opt-in and redacts both input and output", (
   const workflow = fs.readFileSync(new URL("../.github/workflows/automation-network.yml", import.meta.url), "utf8");
   assert.match(workflow, /ONE_XAI_LOG_UPLOAD_APPROVED/);
   assert.match(workflow, /ONE_XAI_LOG_UPLOAD_APPROVED:-\}.*true/s);
-  assert.match(workflow, /raw_log=.*node scripts\/redact-ci-log\.mjs/);
-  assert.match(workflow, /raw_analysis=.*node scripts\/redact-ci-log\.mjs/);
+  assert.ok(workflow.includes('raw_log='));
+  assert.ok(workflow.includes("log=\"$(printf '%s' \"$raw_log\" | node scripts/redact-ci-log.mjs)\""));
+  assert.ok(workflow.includes('raw_analysis='));
+  assert.ok(workflow.includes("analysis=\"$(printf '%s' \"$raw_analysis\" | node scripts/redact-ci-log.mjs)\""));
 });
