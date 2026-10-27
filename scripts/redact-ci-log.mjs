@@ -8,10 +8,21 @@ import { pathToFileURL } from "node:url";
 export function redactCiLog(input) {
   let value = String(input ?? "");
   const patterns = [
-    [/\bAuthorization\s*:\s*(?:Bearer|Basic)\s+[^\s,;]+/gi, "Authorization: [REDACTED_AUTH]"],
+    // Keep sensitive authentication headers redacted even when Basic / Token schemes are used.
+    [/\bAuthorization\s*:\s*(?:Bearer|Basic|Token)\s+[^\s,;]+/gi, "Authorization: [REDACTED_AUTH]"],
     [/\b(?:Cookie|Set-Cookie)\s*:\s*[^\r\n]*/gi, "Cookie: [REDACTED_COOKIE]"],
+    [/\b(?:X-API-Key|Api-Key|X-Auth-Token)\s*:\s*[^\s,;]+/gi, "X-API-Key: [REDACTED_HEADER_KEY]"],
+
+    // Multiline key material must be removed as a block.
+    [/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g, "[REDACTED_PRIVATE_KEY_BLOCK]"],
+
+    // Key-like URL parameters.
     [/([?&](?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|signature|client_secret|code)=)[^&\s#]*/gi, "$1[REDACTED]"],
+
+    // Named secret fields in common log / JSON / YAML forms. Preserve already-redacted markers.
     [/((?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|private[_-]?key|password|passwd|secret|authorization|cookie)\s*["']?\s*[:=]\s*["']?)(?!\[REDACTED(?:_[A-Z]+)?\])[^"'\s,;}&]+/gi, "$1[REDACTED]"],
+
+    // Common provider token shapes.
     [/\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g, "[REDACTED_GITHUB_TOKEN]"],
     [/\bgithub_pat_[A-Za-z0-9_]{20,}\b/g, "[REDACTED_GITHUB_PAT]"],
     [/\bsk-[A-Za-z0-9_-]{20,}\b/g, "[REDACTED_API_KEY]"],
@@ -20,6 +31,8 @@ export function redactCiLog(input) {
     [/\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g, "[REDACTED_SLACK_TOKEN]"],
     [/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}\b/g, "[REDACTED_JWT]"],
     [/\bhttps?:\/\/[^\s/:@]+:[^\s/@]+@/gi, "[REDACTED_URL_CREDENTIALS]"],
+
+    // Email addresses are PII, including in CI diagnostics.
     [/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, "[REDACTED_EMAIL]"],
   ];
   for (const [pattern, replacement] of patterns) value = value.replace(pattern, replacement);
