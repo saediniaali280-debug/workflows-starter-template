@@ -116,14 +116,7 @@ jobs:
               if [ -n "$job_id" ] && [ -n "${ONE_XAI_API_KEY:-}" ] && [ "${ONE_XAI_LOG_UPLOAD_APPROVED:-}" = "true" ]; then
                 raw_log="$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$repo/actions/jobs/$job_id/logs" 2>/dev/null | tail -c 12000 || true)"
                 # Minimize accidental disclosure before any third-party model transfer.
-                log="$(printf '%s' "$raw_log" | sed -E \
-                  -e 's/(Authorization:[[:space:]]*Bearer[[:space:]]+)[^[:space:]]+/\1[REDACTED]/Ig' \
-                  -e 's/([?&](token|key|secret|password|signature|code)=)[^&[:space:]]+/\1[REDACTED]/Ig' \
-                  -e 's/(api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|client_secret|private_key)[[:space:]]*[:=][[:space:]]*[^[:space:],;]+/\1=[REDACTED]/Ig' \
-                  -e 's/gh[pousr]_[A-Za-z0-9_]{20,}/[REDACTED_GITHUB_TOKEN]/g' \
-                  -e 's/sk-[A-Za-z0-9_-]{20,}/[REDACTED_API_KEY]/g' \
-                  -e 's/AKIA[0-9A-Z]{16}/[REDACTED_AWS_KEY]/g' \
-                  -e 's/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/[REDACTED_EMAIL]/g')"
+                log="$(printf '%s' "$raw_log" | node scripts/redact-ci-log.mjs)"
                 fingerprint="$(printf '%s' "$log" | sha256sum | cut -d' ' -f1)"
                 cached="$(d1 "SELECT analysis FROM automation_ai_cache WHERE cache_key = ? LIMIT 1;" "${repo}:${fingerprint}" | jq -r '.result[0].results[0].analysis // empty')"
                 if [ -n "$cached" ]; then
@@ -134,7 +127,8 @@ jobs:
                   ai="$(curl -sS -w '\n%{http_code}' -H "Authorization: Bearer $ONE_XAI_API_KEY" -H 'Content-Type: application/json' -X POST 'https://1xai.ir/v1/chat/completions' --data "$body" || true)"
                   ai_code="$(tail -n 1 <<<"$ai")"
                   ai_json="$(sed '$d' <<<"$ai")"
-                  analysis="$(jq -r '.choices[0].message.content // empty' <<<"$ai_json" 2>/dev/null || true)"
+                  raw_analysis="$(jq -r '.choices[0].message.content // empty' <<<"$ai_json" 2>/dev/null || true)"
+                  analysis="$(printf '%s' "$raw_analysis" | node scripts/redact-ci-log.mjs)"
                   if [ "$ai_code" = "200" ] && [ -n "$analysis" ]; then
                     d1 "INSERT OR REPLACE INTO automation_ai_cache(cache_key,repo,run_id,job_id,model,analysis) VALUES(?,?,?,?,?,?);" "${repo}:${fingerprint}" "$repo" "$run_id" "$job_id" "gpt-4o-mini" "$analysis" >/tmp/ai-cache.json
                     echo "1xAI=CACHE_WRITE repo=$repo"
