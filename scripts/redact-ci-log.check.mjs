@@ -1,8 +1,17 @@
-import test from "node:test";
 import assert from "node:assert/strict";
 import { redactCiLog } from "./redact-ci-log.mjs";
 
-test("redacts common authorization headers and cookies", () => {
+function check(name, fn) {
+  try {
+    fn();
+    console.log("PASS " + name);
+  } catch (error) {
+    console.error("FAIL " + name + ": " + (error instanceof Error ? error.message : String(error)));
+    process.exitCode = 1;
+  }
+}
+
+check("authorization headers and cookies are redacted", () => {
   const input = [
     "Authorization: Bearer bearer-secret-canary",
     "Authorization: Basic basic-secret-canary",
@@ -17,8 +26,8 @@ test("redacts common authorization headers and cookies", () => {
   assert.match(output, /REDACTED_COOKIE/);
 });
 
-test("redacts query credentials, named secret fields, common tokens and email", () => {
-  // Construct realistic-looking canaries from fragments so repository secret scanning
+check("query credentials, secret fields, token shapes, JWT and email are redacted", () => {
+  // Build token-shaped synthetic values from fragments so repository secret scanning
   // does not mistake the test fixture for an actual credential.
   const githubToken = ["ghp", "abcdefghijklmnopqrstuvwxyz1234567890"].join("_");
   const githubPat = ["github", "pat", "abcdefghijklmnopqrstuvwxyz1234567890"].join("_");
@@ -47,7 +56,7 @@ test("redacts query credentials, named secret fields, common tokens and email", 
   assert.match(output, /REDACTED_SLACK_TOKEN/);
 });
 
-test("redaction is safe on empty, non-string and repeated inputs", () => {
+check("empty and non-string inputs are safe; redaction is idempotent", () => {
   assert.equal(redactCiLog(""), "");
   assert.equal(redactCiLog(null), "");
   const once = redactCiLog("Authorization: Bearer repeat-secret-canary");

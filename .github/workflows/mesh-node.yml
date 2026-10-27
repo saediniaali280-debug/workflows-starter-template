@@ -39,8 +39,8 @@ jobs:
             *) echo "AUTHOR=$author REJECTED"; exit 1 ;;
           esac
 
-      - name: CI log redaction regression tests
-        run: node --test scripts/redact-ci-log.test.mjs
+      - name: CI log redaction regression checks
+        run: node scripts/redact-ci-log.check.mjs
 
       - name: Generic CI evidence
         shell: bash
