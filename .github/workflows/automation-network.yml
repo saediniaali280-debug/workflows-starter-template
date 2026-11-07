@@ -15,20 +15,33 @@ jobs:
   network-health:
     runs-on: ubuntu-latest
     steps:
-      - name: Require network credentials
+      - name: Check network credentials
+        id: credentials
         env:
           GH_TOKEN: ${{ secrets.NETWORK_GITHUB_TOKEN }}
           CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           D1_ID: ${{ secrets.NETWORK_D1_DATABASE_ID }}
+        shell: bash
         run: |
           set -euo pipefail
-          test -n "${GH_TOKEN:-}" || { echo 'NETWORK_GITHUB_TOKEN=NOT_CONFIGURED'; exit 1; }
-          test -n "${CF_TOKEN:-}" || { echo 'CLOUDFLARE_API_TOKEN=NOT_CONFIGURED'; exit 1; }
-          test -n "${CF_ACCOUNT_ID:-}" || { echo 'CLOUDFLARE_ACCOUNT_ID=NOT_CONFIGURED'; exit 1; }
-          test -n "${D1_ID:-}" || { echo 'NETWORK_D1_DATABASE_ID=NOT_CONFIGURED'; exit 1; }
+          missing=()
+          [ -n "${GH_TOKEN:-}" ] || missing+=(NETWORK_GITHUB_TOKEN)
+          [ -n "${CF_TOKEN:-}" ] || missing+=(CLOUDFLARE_API_TOKEN)
+          [ -n "${CF_ACCOUNT_ID:-}" ] || missing+=(CLOUDFLARE_ACCOUNT_ID)
+          [ -n "${D1_ID:-}" ] || missing+=(NETWORK_D1_DATABASE_ID)
+          if [ "${#missing[@]}" -eq 0 ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+            echo "NETWORK_CREDENTIALS=CONFIGURED" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "NETWORK_HEALTH=SKIPPED_NOT_CONFIGURED" >> "$GITHUB_STEP_SUMMARY"
+            echo "Missing required repository secrets: ${missing[*]}" >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::Network checks skipped; required repository secrets are not configured."
+          fi
 
       - name: Initialize D1 network tables
+        if: ${{ steps.credentials.outputs.configured == 'true' }}
         env:
           CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -42,6 +55,7 @@ jobs:
           echo 'D1_SCHEMA=READY'
 
       - name: Process incoming heartbeat
+        if: ${{ steps.credentials.outputs.configured == 'true' }}
         if: ${{ github.event_name == 'repository_dispatch' }}
         env:
           CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -63,6 +77,7 @@ jobs:
           echo "HEARTBEAT_STORED=$HEARTBEAT_REPO"
 
       - name: Poll repository workflows and self-heal once
+        if: ${{ steps.credentials.outputs.configured == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.NETWORK_GITHUB_TOKEN }}
           CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
