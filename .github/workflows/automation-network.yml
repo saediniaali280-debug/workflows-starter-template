@@ -55,8 +55,7 @@ jobs:
           echo 'D1_SCHEMA=READY'
 
       - name: Process incoming heartbeat
-        if: ${{ steps.credentials.outputs.configured == 'true' }}
-        if: ${{ github.event_name == 'repository_dispatch' }}
+        if: ${{ steps.credentials.outputs.configured == 'true' && github.event_name == 'repository_dispatch' }}
         env:
           CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
