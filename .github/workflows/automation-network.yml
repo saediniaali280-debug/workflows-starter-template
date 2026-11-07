@@ -1,6 +1,9 @@
 name: Automation Network
 
 on:
+  pull_request:
+    paths:
+      - '.github/workflows/automation-network.yml'
   workflow_dispatch:
   schedule:
     - cron: '17 * * * *'
